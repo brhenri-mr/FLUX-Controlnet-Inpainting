@@ -920,10 +920,10 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                 for i in range(len(captions)):
                     
                     # Dados do batch
-                    prompt = data[i][0] # Prompt 
-                    x0 = load_image(data[i][3]).convert("RGB").resize(size)# Imagem base --> Sem as conexões
-                    x1 = load_image(data[i][1]).convert("RGB").resize(size) #  Imagem targe --> Com as conexões
-                    control_mask = load_image(data[i][2]).convert("RGB").resize(size) # Mascara do modelo
+                    prompt = data[1][i] # Prompt 
+                    x0 = load_image(data[3][i]).convert("RGB").resize(size)# Imagem base --> Sem as conexões
+                    x1 = load_image(data[1][i]).convert("RGB").resize(size) #  Imagem targe --> Com as conexões
+                    control_mask = load_image(data[2][i]).convert("RGB").resize(size) # Mascara do modelo
 
                     
                     # Extraindo dados so 
