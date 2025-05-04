@@ -917,7 +917,7 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                 # extraindo os pacotes completos
                 captions, target, mask_image, img_raws = data
                 
-                for i in len(captions):
+                for i in range(len(captions)):
                     
                     # Dados do batch
                     prompt = data[i][0] # Prompt 
@@ -957,6 +957,8 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                         pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim = 0)
                         text_ids = torch.cat([text_ids, text_ids], dim = 0)
 
+                    print('Prompt encodado')
+                    
                     # 3. Prepare control image
                     num_channels_latents = self.transformer.config.in_channels // 4
                     if isinstance(self.controlnet, FluxControlNetModel):
@@ -983,7 +985,7 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                             dtype=dtype,
                             do_classifier_free_guidance=self.do_classifier_free_guidance,
                         )
-                        
+                    print('Imagem Latentes criadas')
                     
                     # 4. Prepare latent variables
                     num_channels_latents = self.transformer.config.in_channels // 4
@@ -1001,10 +1003,12 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                     if self.do_classifier_free_guidance:
                         latent_image_ids = torch.cat([latent_image_ids] * 2)
                     
+                    
                     t = torch.rand(batch_size).to(device)
                     # Entradas
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # Imagem latente
                     xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
+                    print('Imagem intermediária criada')
                     
                     # handle guidance
                     if self.transformer.config.guidance_embeds:
@@ -1028,7 +1032,7 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                                                                                                 joint_attention_kwargs=self.joint_attention_kwargs,
                                                                                                 return_dict=False,
                                                                                             )
-                    
+                    print('Control net feito')
                     
                     velocity_pred = self.transformer(
                                                 hidden_states=xt,
@@ -1050,6 +1054,7 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                                                 return_dict=False,
                                             )[0]
                     
+                    print('Velocidade predita')
                     # 在生成循环中
                     if self.do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_text = velocity_pred.chunk(2)
@@ -1059,6 +1064,8 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                     velocity_target = target_image - latent_model_input  # Velocidade real
                     loss = (((velocity_pred - velocity_target) ** 2)*mask_latente).mean()
                     total_loss += loss
+                    print(f'batch {i} feito!')
+                    print('####################')
                     
             batch_loss = total_loss / len(captions) # Média do loss no batch
             print(f'Epoca{epoch} loss:{batch_loss}')
