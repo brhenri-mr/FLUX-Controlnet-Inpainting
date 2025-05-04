@@ -14,6 +14,7 @@ from transformers import (
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
 from diffusers.loaders import FluxLoraLoaderMixin
 from diffusers.models.autoencoders import AutoencoderKL
+from diffusers.utils import load_image
 
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import (
@@ -876,6 +877,7 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
         batch_size = 1
         device = self._execution_device
         dtype = self.transformer.dtype
+        size = (height, width)
 
         lora_scale = (
             self.joint_attention_kwargs.get("scale", None)
@@ -902,147 +904,166 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                    lr=5e-5,
                    weight_decay=0.01)
         
+        print('Iniciando o treinamento')
+        print('#######################')
+        print('Method: KVLoRA')
+        print(f'Epochs: {EPCOHS}')
+        
         for epoch in range(EPCOHS): 
+            print('Iniciando epoch={EPCOHS}')
             for data in dataloader:
+                total_loss = 0
                 
-                # Extraindo dados so 
-                prompt = data[0] # Prompt 
-                x0 = data[1] # Imagem base --> Sem as conexões
-                x1 = data[2] #  Imagem targe --> Com as conexões
-                control_mask = data[3] # Mascara do modelo
+                # extraindo os pacotes completos
+                captions, target, mask_image, img_raws = data
+                
+                for i in len(captions):
+                    
+                    # Dados do batch
+                    prompt = data[i][0] # Prompt 
+                    x0 = load_image(data[i][3]).convert("RGB").resize(size)# Imagem base --> Sem as conexões
+                    x1 = load_image(data[i][1]).convert("RGB").resize(size) #  Imagem targe --> Com as conexões
+                    control_mask = load_image(data[i][2]).convert("RGB").resize(size) # Mascara do modelo
 
-                # Gerando o gradiente
-                optimizer.zero_grad()
-                
-                # Encode do prompt
-                (            
-                    prompt_embeds,
-                    pooled_prompt_embeds,
-                    negative_prompt_embeds,
-                    negative_pooled_prompt_embeds,
-                    text_ids) = self.encode_prompt(
-                                            prompt=prompt,
-                                            prompt_2=prompt_2,
-                                            prompt_embeds=prompt_embeds,
-                                            pooled_prompt_embeds=pooled_prompt_embeds,
-                                            do_classifier_free_guidance = self.do_classifier_free_guidance,
-                                            negative_prompt = negative_prompt,
-                                            negative_prompt_2 = negative_prompt_2,
-                                            device=device,
-                                            num_images_per_prompt=num_images_per_prompt,
-                                            max_sequence_length=max_sequence_length,
-                                            lora_scale=lora_scale,
-                                        )
-                
-                # 在 encode_prompt 之后
-                if self.do_classifier_free_guidance:
-                    prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim = 0)
-                    pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim = 0)
-                    text_ids = torch.cat([text_ids, text_ids], dim = 0)
+                    
+                    # Extraindo dados so 
 
-                # 3. Prepare control image
-                num_channels_latents = self.transformer.config.in_channels // 4
-                if isinstance(self.controlnet, FluxControlNetModel):
-                    # Imagem latente com a mascara
-                    control_image, height, width, mask_latente = self.prepare_image_with_mask(
-                        image=x0,
-                        mask=control_mask,
-                        width=width,
-                        height=height,
-                        batch_size=batch_size * num_images_per_prompt,
-                        num_images_per_prompt=num_images_per_prompt,
-                        device=device,
-                        dtype=dtype,
-                        do_classifier_free_guidance=self.do_classifier_free_guidance,
-                    )
+                    # Gerando o gradiente
+                    optimizer.zero_grad()
                     
-                    target_image, height, width = self.prepare_image_target(
-                        image=x1,
-                        width=width,
-                        height=height,
-                        batch_size=batch_size * num_images_per_prompt,
-                        num_images_per_prompt=num_images_per_prompt,
-                        device=device,
-                        dtype=dtype,
-                        do_classifier_free_guidance=self.do_classifier_free_guidance,
-                    )
+                    # Encode do prompt
+                    (            
+                        prompt_embeds,
+                        pooled_prompt_embeds,
+                        negative_prompt_embeds,
+                        negative_pooled_prompt_embeds,
+                        text_ids) = self.encode_prompt(
+                                                prompt=prompt,
+                                                prompt_2=prompt_2,
+                                                prompt_embeds=prompt_embeds,
+                                                pooled_prompt_embeds=pooled_prompt_embeds,
+                                                do_classifier_free_guidance = self.do_classifier_free_guidance,
+                                                negative_prompt = negative_prompt,
+                                                negative_prompt_2 = negative_prompt_2,
+                                                device=device,
+                                                num_images_per_prompt=num_images_per_prompt,
+                                                max_sequence_length=max_sequence_length,
+                                                lora_scale=lora_scale,
+                                            )
                     
-                
-                # 4. Prepare latent variables
-                num_channels_latents = self.transformer.config.in_channels // 4
-                latents, latent_image_ids = self.prepare_latents(
-                                                                    batch_size * num_images_per_prompt,
-                                                                    num_channels_latents,
-                                                                    height,
-                                                                    width,
-                                                                    prompt_embeds.dtype,
-                                                                    device,
-                                                                    generator,
-                                                                    latents,
-                                                                )
-                
-                if self.do_classifier_free_guidance:
-                    latent_image_ids = torch.cat([latent_image_ids] * 2)
-                
-                t = torch.rand(batch_size).to(device)
-                # Entradas
-                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # Imagem latente
-                xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
-                
-                # handle guidance
-                if self.transformer.config.guidance_embeds:
-                    guidance = torch.tensor([guidance_scale], device=device)
-                    guidance = guidance.expand(latent_model_input.shape[0])
-                else:
-                    guidance = None
+                    # 在 encode_prompt 之后
+                    if self.do_classifier_free_guidance:
+                        prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim = 0)
+                        pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim = 0)
+                        text_ids = torch.cat([text_ids, text_ids], dim = 0)
+
+                    # 3. Prepare control image
+                    num_channels_latents = self.transformer.config.in_channels // 4
+                    if isinstance(self.controlnet, FluxControlNetModel):
+                        # Imagem latente com a mascara
+                        control_image, height, width, mask_latente = self.prepare_image_with_mask(
+                            image=x0,
+                            mask=control_mask,
+                            width=width,
+                            height=height,
+                            batch_size=batch_size * num_images_per_prompt,
+                            num_images_per_prompt=num_images_per_prompt,
+                            device=device,
+                            dtype=dtype,
+                            do_classifier_free_guidance=self.do_classifier_free_guidance,
+                        )
+                        
+                        target_image, height, width = self.prepare_image_target(
+                            image=x1,
+                            width=width,
+                            height=height,
+                            batch_size=batch_size * num_images_per_prompt,
+                            num_images_per_prompt=num_images_per_prompt,
+                            device=device,
+                            dtype=dtype,
+                            do_classifier_free_guidance=self.do_classifier_free_guidance,
+                        )
+                        
+                    
+                    # 4. Prepare latent variables
+                    num_channels_latents = self.transformer.config.in_channels // 4
+                    latents, latent_image_ids = self.prepare_latents(
+                                                                        batch_size * num_images_per_prompt,
+                                                                        num_channels_latents,
+                                                                        height,
+                                                                        width,
+                                                                        prompt_embeds.dtype,
+                                                                        device,
+                                                                        generator,
+                                                                        latents,
+                                                                    )
+                    
+                    if self.do_classifier_free_guidance:
+                        latent_image_ids = torch.cat([latent_image_ids] * 2)
+                    
+                    t = torch.rand(batch_size).to(device)
+                    # Entradas
+                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # Imagem latente
+                    xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
+                    
+                    # handle guidance
+                    if self.transformer.config.guidance_embeds:
+                        guidance = torch.tensor([guidance_scale], device=device)
+                        guidance = guidance.expand(latent_model_input.shape[0])
+                    else:
+                        guidance = None
+                        
+                        
+                    # controlnet
+                    (controlnet_block_samples, controlnet_single_block_samples, ) = self.controlnet(
+                                                                                                hidden_states=xt,
+                                                                                                controlnet_cond=control_image,
+                                                                                                conditioning_scale=controlnet_conditioning_scale,
+                                                                                                timestep=t,
+                                                                                                guidance=guidance,
+                                                                                                pooled_projections=pooled_prompt_embeds,
+                                                                                                encoder_hidden_states=prompt_embeds,
+                                                                                                txt_ids=text_ids,
+                                                                                                img_ids=latent_image_ids,
+                                                                                                joint_attention_kwargs=self.joint_attention_kwargs,
+                                                                                                return_dict=False,
+                                                                                            )
                     
                     
-                # controlnet
-                (controlnet_block_samples, controlnet_single_block_samples, ) = self.controlnet(
-                                                                                            hidden_states=xt,
-                                                                                            controlnet_cond=control_image,
-                                                                                            conditioning_scale=controlnet_conditioning_scale,
-                                                                                            timestep=t,
-                                                                                            guidance=guidance,
-                                                                                            pooled_projections=pooled_prompt_embeds,
-                                                                                            encoder_hidden_states=prompt_embeds,
-                                                                                            txt_ids=text_ids,
-                                                                                            img_ids=latent_image_ids,
-                                                                                            joint_attention_kwargs=self.joint_attention_kwargs,
-                                                                                            return_dict=False,
-                                                                                        )
-                
-                
-                velocity_pred = self.transformer(
-                                            hidden_states=xt,
-                                            timestep=t, # Que eu saiba o valor é 1 no treinamento,
-                                            guidance=guidance,
-                                            pooled_projections=pooled_prompt_embeds,
-                                            encoder_hidden_states=prompt_embeds,
-                                            controlnet_block_samples=[
-                                                sample.to(dtype=self.transformer.dtype)
-                                                for sample in controlnet_block_samples
-                                            ],
-                                            controlnet_single_block_samples=[
-                                                sample.to(dtype=self.transformer.dtype)
-                                                for sample in controlnet_single_block_samples
-                                            ] if controlnet_single_block_samples is not None else controlnet_single_block_samples,
-                                            txt_ids=text_ids,
-                                            img_ids=latent_image_ids,
-                                            joint_attention_kwargs=self.joint_attention_kwargs,
-                                            return_dict=False,
-                                        )[0]
-                
-                # 在生成循环中
-                if self.do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = velocity_pred.chunk(2)
-                    velocity_pred = noise_pred_uncond + true_guidance_scale * (noise_pred_text - noise_pred_uncond)
-                
-                
-                velocity_target = target_image - latent_model_input  # Velocidade real
-                loss = (((velocity_pred - velocity_target) ** 2)*mask_latente).mean()
-                loss.backpropagation()
-                optimizer.step()
+                    velocity_pred = self.transformer(
+                                                hidden_states=xt,
+                                                timestep=t, # Que eu saiba o valor é 1 no treinamento,
+                                                guidance=guidance,
+                                                pooled_projections=pooled_prompt_embeds,
+                                                encoder_hidden_states=prompt_embeds,
+                                                controlnet_block_samples=[
+                                                    sample.to(dtype=self.transformer.dtype)
+                                                    for sample in controlnet_block_samples
+                                                ],
+                                                controlnet_single_block_samples=[
+                                                    sample.to(dtype=self.transformer.dtype)
+                                                    for sample in controlnet_single_block_samples
+                                                ] if controlnet_single_block_samples is not None else controlnet_single_block_samples,
+                                                txt_ids=text_ids,
+                                                img_ids=latent_image_ids,
+                                                joint_attention_kwargs=self.joint_attention_kwargs,
+                                                return_dict=False,
+                                            )[0]
+                    
+                    # 在生成循环中
+                    if self.do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = velocity_pred.chunk(2)
+                        velocity_pred = noise_pred_uncond + true_guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    
+                    
+                    velocity_target = target_image - latent_model_input  # Velocidade real
+                    loss = (((velocity_pred - velocity_target) ** 2)*mask_latente).mean()
+                    total_loss += loss
+                    
+            batch_loss = total_loss / len(captions) # Média do loss no batch
+            print(f'Epoca{epoch} loss:{batch_loss}')
+            batch_loss.backward()
+            optimizer.step()
                  
 
         return True
