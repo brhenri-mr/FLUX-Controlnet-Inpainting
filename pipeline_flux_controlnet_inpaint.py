@@ -1004,10 +1004,17 @@ class FluxControlNetInpaintingPipeline(DiffusionPipeline, FluxLoraLoaderMixin):
                         latent_image_ids = torch.cat([latent_image_ids] * 2)
                     
                     
-                    t = torch.rand(batch_size).to(device)
+
                     # Entradas
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # Imagem latente
-                    xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
+                    
+                    try:
+                        t = torch.rand(batch_size).to(device)
+                        xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
+                    except:
+                        t = torch.rand(batch_size).to('cuda')
+                        xt = (1 - t) * latent_model_input + t * target_image     # Imagem latente interpolada para um tempo t
+                        
                     print('Imagem intermediária criada')
                     
                     # handle guidance
